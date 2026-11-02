@@ -61,6 +61,13 @@ workflows:
     name: Ayu iOS - simulator compile check
     instance_type: mac_mini_m2
     max_build_duration: 120
+    triggering:
+      events:
+        - push
+      branch_patterns:
+        - pattern: 'master'
+          include: true
+          source: true
     environment:
       xcode: "27.1"
       vars:
