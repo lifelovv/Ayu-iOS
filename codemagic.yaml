@@ -1,0 +1,75 @@
+workflows:
+  ayu-ios-ipa:
+    name: Ayu iOS - IPA for re-signing
+    instance_type: mac_mini_m2
+    max_build_duration: 120
+    environment:
+      xcode: "27.1"
+      groups:
+        - telegram_api
+    scripts:
+      - name: Check toolchain and generate private configuration
+        script: python3 tools/ayu/ci.py configure
+      - name: Download pinned submodules
+        script: |
+          set -euo pipefail
+          git config -f .gitmodules submodule.submodules/rlottie/rlottie.url https://github.com/TelegramMessenger/rlottie.git
+          git config -f .gitmodules submodule.submodules/TgVoipWebrtc/tgcalls.url https://github.com/TelegramMessenger/tgcalls.git
+          git submodule sync --recursive
+          git submodule update --init --recursive --jobs 8
+      - name: Import upstream test signing identity
+        script: python3 build-system/Make/ImportCertificates.py --path build-system/fake-codesigning/certs
+      - name: Build device IPA with test signature
+        script: |
+          set -euo pipefail
+          python3 -u build-system/Make/Make.py \
+            --cacheDir="$HOME/ayu-bazel-cache" \
+            build \
+            --configurationPath=build-input/ayu/configuration.json \
+            --codesigningInformationPath=build-system/fake-codesigning \
+            --configuration=release_arm64 \
+            --buildNumber="${BUILD_NUMBER:-1}" \
+            --outputBuildArtifactsPath=build/ayu-artifacts
+          python3 tools/ayu/ci.py collect
+    artifacts:
+      - build/ayu-artifacts/Ayu-iOS-resign-required.ipa
+      - build/ayu-artifacts/Telegram.DSYMs.zip
+      - build/ayu-artifacts/build-info.json
+    cache:
+      cache_paths:
+        - $HOME/ayu-bazel-cache
+
+  ayu-ios-simulator:
+    name: Ayu iOS - simulator compile check
+    instance_type: mac_mini_m2
+    max_build_duration: 120
+    environment:
+      xcode: "27.1"
+      groups:
+        - telegram_api
+    scripts:
+      - name: Check toolchain and generate private configuration
+        script: python3 tools/ayu/ci.py configure
+      - name: Download pinned submodules
+        script: |
+          set -euo pipefail
+          git config -f .gitmodules submodule.submodules/rlottie/rlottie.url https://github.com/TelegramMessenger/rlottie.git
+          git config -f .gitmodules submodule.submodules/TgVoipWebrtc/tgcalls.url https://github.com/TelegramMessenger/tgcalls.git
+          git submodule sync --recursive
+          git submodule update --init --recursive --jobs 8
+      - name: Build simulator app
+        script: |
+          set -euo pipefail
+          python3 -u build-system/Make/Make.py \
+            --cacheDir="$HOME/ayu-bazel-cache" \
+            build \
+            --configurationPath=build-input/ayu/configuration.json \
+            --codesigningInformationPath=build-system/fake-codesigning \
+            --configuration=debug_sim_arm64 \
+            --buildNumber="${BUILD_NUMBER:-1}" \
+            --outputBuildArtifactsPath=build/ayu-simulator
+    artifacts:
+      - build/ayu-simulator/Telegram.ipa
+    cache:
+      cache_paths:
+        - $HOME/ayu-bazel-cache
