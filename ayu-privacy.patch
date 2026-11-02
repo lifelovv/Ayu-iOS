@@ -1,0 +1,285 @@
+diff --git a/submodules/SettingsUI/Sources/AyuSettingsController.swift b/submodules/SettingsUI/Sources/AyuSettingsController.swift
+new file mode 100644
+--- /dev/null
++++ b/submodules/SettingsUI/Sources/AyuSettingsController.swift
+@@ -0,0 +1,67 @@
++import Foundation
++import Display
++import SwiftSignalKit
++import TelegramCore
++import TelegramPresentationData
++import ItemListUI
++import AccountContext
++
++private struct AyuSettingsArguments {
++    let update: (Int32, Bool) -> Void
++}
++
++private struct AyuSettingsEntry: ItemListNodeEntry {
++    let stableId: Int32
++    let title: String
++    let value: Bool?
++
++    var section: ItemListSectionId { return 0 }
++
++    static func < (lhs: AyuSettingsEntry, rhs: AyuSettingsEntry) -> Bool {
++        return lhs.stableId < rhs.stableId
++    }
++
++    func item(presentationData: ItemListPresentationData, arguments: Any) -> ListViewItem {
++        let arguments = arguments as! AyuSettingsArguments
++        if let value = self.value {
++            return ItemListSwitchItem(presentationData: presentationData, systemStyle: .glass, title: self.title, value: value, sectionId: self.section, style: .blocks, updated: { value in
++                arguments.update(self.stableId, value)
++            })
++        } else {
++            return ItemListTextItem(presentationData: presentationData, text: .plain(self.title), sectionId: self.section)
++        }
++    }
++}
++
++/// Local settings for the current account, available from Privacy and Security > Ayu.
++public func ayuSettingsController(context: AccountContext) -> ViewController {
++    let actions = DisposableSet()
++    let arguments = AyuSettingsArguments(update: { id, value in
++        actions.add(context.engine.privacy.updateAyuSettings { current in
++            var updated = current
++            switch id {
++            case 0: updated.hideOnline = value
++            case 1: updated.hideTyping = value
++            case 2: updated.keepChatsUnread = value
++            default: break
++            }
++            return updated
++        }.start())
++    })
++    let signal = combineLatest(context.sharedContext.presentationData, context.engine.privacy.ayuSettings())
++    |> deliverOnMainQueue
++    |> map { presentationData, settings -> (ItemListControllerState, (ItemListNodeState, Any)) in
++        let entries: [AyuSettingsEntry] = [
++            AyuSettingsEntry(stableId: 0, title: "Не отправлять статус онлайн", value: settings.hideOnline),
++            AyuSettingsEntry(stableId: 1, title: "Скрывать набор текста и запись", value: settings.hideTyping),
++            AyuSettingsEntry(stableId: 2, title: "Не читать чаты автоматически", value: settings.keepChatsUnread),
++            AyuSettingsEntry(stableId: 3, title: "Настройки действуют только для этого аккаунта. Ручное прочтение и просмотры историй пока не скрываются. Отправка сообщений и другие действия могут раскрыть активность.", value: nil)
++        ]
++        let state = ItemListControllerState(presentationData: ItemListPresentationData(presentationData), title: .text("Ayu · Приватность"), leftNavigationButton: nil, rightNavigationButton: nil, backNavigationButton: ItemListBackButton(title: presentationData.strings.Common_Back))
++        return (state, (ItemListNodeState(presentationData: ItemListPresentationData(presentationData), entries: entries, style: .blocks, animateChanges: false), arguments))
++    }
++    |> afterDisposed {
++        actions.dispose()
++    }
++    return ItemListController(context: context, state: signal)
++}
+diff --git a/submodules/SettingsUI/Sources/Privacy and Security/PrivacyAndSecurityController.swift b/submodules/SettingsUI/Sources/Privacy and Security/PrivacyAndSecurityController.swift
+--- a/submodules/SettingsUI/Sources/Privacy and Security/PrivacyAndSecurityController.swift
++++ b/submodules/SettingsUI/Sources/Privacy and Security/PrivacyAndSecurityController.swift
+@@ -1608,7 +1608,9 @@ public func privacyAndSecurityController(
+             canAutoarchive = hasAutoarchive
+         }
+         
+-        var rightNavigationButton: ItemListNavigationButton?
++        var rightNavigationButton: ItemListNavigationButton? = ItemListNavigationButton(content: .text("Ayu"), style: .regular, enabled: true, action: {
++            pushControllerImpl?(ayuSettingsController(context: context), true)
++        })
+         if privacySettings == nil || state.updatingAccountTimeoutValue != nil {
+             rightNavigationButton = ItemListNavigationButton(content: .none, style: .activity, enabled: true, action: {})
+         }
+diff --git a/submodules/TelegramCore/Sources/Account/Account.swift b/submodules/TelegramCore/Sources/Account/Account.swift
+--- a/submodules/TelegramCore/Sources/Account/Account.swift
++++ b/submodules/TelegramCore/Sources/Account/Account.swift
+@@ -1373,7 +1373,11 @@ public class Account {
+         
+         self.contactSyncManager = ContactSyncManager(postbox: postbox, network: network, accountPeerId: peerId, stateManager: self.stateManager)
+         self.localInputActivityManager = PeerInputActivityManager()
+-        self.accountPresenceManager = AccountPresenceManager(shouldKeepOnlinePresence: self.shouldKeepOnlinePresence.get(), network: network)
++        let ayuOnlinePresence = combineLatest(self.shouldKeepOnlinePresence.get(), observeAyuPrivacySettings(postbox: postbox))
++        |> map { requested, settings in
++            return settings.shouldSendOnlinePresence(requested)
++        }
++        self.accountPresenceManager = AccountPresenceManager(shouldKeepOnlinePresence: ayuOnlinePresence, network: network)
+         #if os(iOS)
+         // iOS only for now: the Rust engine is the macOS default, and its online keepalive cadence
+         // (pings every 1-2 s while the account is in front) has not been measured there.
+diff --git a/submodules/TelegramCore/Sources/Settings/AyuPrivacySettings.swift b/submodules/TelegramCore/Sources/Settings/AyuPrivacySettings.swift
+new file mode 100644
+--- /dev/null
++++ b/submodules/TelegramCore/Sources/Settings/AyuPrivacySettings.swift
+@@ -0,0 +1,36 @@
++import Foundation
++
++/// Local, per-account preferences. They never change Telegram's server privacy settings.
++public struct AyuPrivacySettings: Codable, Equatable {
++    public var hideOnline: Bool
++    public var hideTyping: Bool
++    public var keepChatsUnread: Bool
++
++    public static let `default` = AyuPrivacySettings()
++
++    public init(hideOnline: Bool = false, hideTyping: Bool = false, keepChatsUnread: Bool = false) {
++        self.hideOnline = hideOnline
++        self.hideTyping = hideTyping
++        self.keepChatsUnread = keepChatsUnread
++    }
++
++    private enum CodingKeys: String, CodingKey {
++        case hideOnline, hideTyping, keepChatsUnread
++    }
++
++    public init(from decoder: Decoder) throws {
++        let container = try decoder.container(keyedBy: CodingKeys.self)
++        self.hideOnline = try container.decodeIfPresent(Bool.self, forKey: .hideOnline) ?? false
++        self.hideTyping = try container.decodeIfPresent(Bool.self, forKey: .hideTyping) ?? false
++        self.keepChatsUnread = try container.decodeIfPresent(Bool.self, forKey: .keepChatsUnread) ?? false
++    }
++
++    public func shouldSendOnlinePresence(_ requested: Bool) -> Bool {
++        return requested && !self.hideOnline
++    }
++
++    public func shouldSendActivity(isCancellation: Bool, isGroupCall: Bool) -> Bool {
++        // Always allow cancellation of a previously published activity and call signaling.
++        return !self.hideTyping || isCancellation || isGroupCall
++    }
++}
+diff --git a/submodules/TelegramCore/Sources/Settings/AyuPrivacySettingsStorage.swift b/submodules/TelegramCore/Sources/Settings/AyuPrivacySettingsStorage.swift
+new file mode 100644
+--- /dev/null
++++ b/submodules/TelegramCore/Sources/Settings/AyuPrivacySettingsStorage.swift
+@@ -0,0 +1,21 @@
++import Postbox
++import SwiftSignalKit
++
++// An eight-byte fork-specific key cannot collide with upstream's four-byte keys.
++let ayuPrivacySettingsKey: ValueBoxKey = {
++    let key = ValueBoxKey(length: 8)
++    key.setInt64(0, value: 0x4159555052495631)
++    return key
++}()
++
++func fetchAyuPrivacySettings(transaction: Transaction) -> AyuPrivacySettings {
++    return transaction.getPreferencesEntry(key: ayuPrivacySettingsKey)?.get(AyuPrivacySettings.self) ?? .default
++}
++
++func observeAyuPrivacySettings(postbox: Postbox) -> Signal<AyuPrivacySettings, NoError> {
++    return postbox.preferencesView(keys: [ayuPrivacySettingsKey])
++    |> map { view in
++        return view.values[ayuPrivacySettingsKey]?.get(AyuPrivacySettings.self) ?? .default
++    }
++    |> distinctUntilChanged
++}
+diff --git a/submodules/TelegramCore/Sources/State/ManagedLocalInputActivities.swift b/submodules/TelegramCore/Sources/State/ManagedLocalInputActivities.swift
+--- a/submodules/TelegramCore/Sources/State/ManagedLocalInputActivities.swift
++++ b/submodules/TelegramCore/Sources/State/ManagedLocalInputActivities.swift
+@@ -143,6 +143,15 @@ private func actionFromActivity(_ activity: PeerInputActivity?) -> Api.SendMessa
+ 
+ private func requestActivity(postbox: Postbox, network: Network, accountPeerId: PeerId, peerId: PeerId, threadId: Int64?, activity: PeerInputActivity?) -> Signal<Void, NoError> {
+     return postbox.transaction { transaction -> Signal<Void, NoError> in
++        let isGroupCall: Bool
++        if case .speakingInGroupCall? = activity {
++            isGroupCall = true
++        } else {
++            isGroupCall = false
++        }
++        guard fetchAyuPrivacySettings(transaction: transaction).shouldSendActivity(isCancellation: activity == nil, isGroupCall: isGroupCall) else {
++            return .complete()
++        }
+         if let peer = transaction.getPeer(peerId) {
+             if peerId == accountPeerId {
+                 return .complete()
+diff --git a/submodules/TelegramCore/Sources/TelegramEngine/Messages/ApplyMaxReadIndexInteractively.swift b/submodules/TelegramCore/Sources/TelegramEngine/Messages/ApplyMaxReadIndexInteractively.swift
+--- a/submodules/TelegramCore/Sources/TelegramEngine/Messages/ApplyMaxReadIndexInteractively.swift
++++ b/submodules/TelegramCore/Sources/TelegramEngine/Messages/ApplyMaxReadIndexInteractively.swift
+@@ -31,6 +31,9 @@ func _internal_applyMaxReadIndexInteractively(postbox: Postbox, stateManager: Ac
+ /// intent - can say it did nothing rather than claim success.
+ func _internal_applyMaxReadMessageIdInteractively(postbox: Postbox, stateManager: AccountStateManager, messageId: MessageId) -> Signal<Bool, NoError> {
+     return postbox.transaction { transaction -> Bool in
++        guard !fetchAyuPrivacySettings(transaction: transaction).keepChatsUnread else {
++            return false
++        }
+         guard messageId.peerId.namespace != Namespaces.Peer.SecretChat else {
+             return false
+         }
+@@ -45,6 +48,9 @@ func _internal_applyMaxReadMessageIdInteractively(postbox: Postbox, stateManager
+ }
+ 
+ func _internal_applyMaxReadIndexInteractively(transaction: Transaction, stateManager: AccountStateManager, index: MessageIndex) {
++    guard !fetchAyuPrivacySettings(transaction: transaction).keepChatsUnread else {
++        return
++    }
+     // A channel the account is not a member of has no read state on the server
+     // (NonMemberChannelReadState.swift): nothing moves locally and no push is queued.
+     guard peerKeepsReadState(transaction.getPeer(index.id.peerId)) else {
+diff --git a/submodules/TelegramCore/Sources/TelegramEngine/Messages/InstallInteractiveReadMessagesAction.swift b/submodules/TelegramCore/Sources/TelegramEngine/Messages/InstallInteractiveReadMessagesAction.swift
+--- a/submodules/TelegramCore/Sources/TelegramEngine/Messages/InstallInteractiveReadMessagesAction.swift
++++ b/submodules/TelegramCore/Sources/TelegramEngine/Messages/InstallInteractiveReadMessagesAction.swift
+@@ -5,6 +5,9 @@ import SwiftSignalKit
+ 
+ func _internal_installInteractiveReadMessagesAction(postbox: Postbox, stateManager: AccountStateManager, peerId: PeerId, threadId: Int64?) -> Disposable {
+     return postbox.installStoreMessageAction(peerId: peerId, { messages, transaction in
++        guard !fetchAyuPrivacySettings(transaction: transaction).keepChatsUnread else {
++            return
++        }
+         var consumeMessageIds: [MessageId] = []
+         var readReactionOrPollVotesIds: [MessageId] = []
+         
+@@ -185,6 +188,9 @@ private final class StoreOrUpdateMessageActionImpl: StoreOrUpdateMessageAction {
+     }
+     
+     func addOrUpdate(messages: [StoreMessage], transaction: Transaction) {
++        guard !fetchAyuPrivacySettings(transaction: transaction).keepChatsUnread else {
++            return
++        }
+         var readReactionIds: [MessageId: [ReactionsMessageAttribute.RecentPeer]] = [:]
+         var readPollVoteIds = Set<MessageId>()
+         
+diff --git a/submodules/TelegramCore/Sources/TelegramEngine/Privacy/TelegramEnginePrivacy.swift b/submodules/TelegramCore/Sources/TelegramEngine/Privacy/TelegramEnginePrivacy.swift
+--- a/submodules/TelegramCore/Sources/TelegramEngine/Privacy/TelegramEnginePrivacy.swift
++++ b/submodules/TelegramCore/Sources/TelegramEngine/Privacy/TelegramEnginePrivacy.swift
+@@ -9,6 +9,19 @@ public extension TelegramEngine {
+             self.account = account
+         }
+ 
++        public func ayuSettings() -> Signal<AyuPrivacySettings, NoError> {
++            return observeAyuPrivacySettings(postbox: self.account.postbox)
++        }
++
++        public func updateAyuSettings(_ update: @escaping (AyuPrivacySettings) -> AyuPrivacySettings) -> Signal<Never, NoError> {
++            return self.account.postbox.transaction { transaction -> Void in
++                transaction.updatePreferencesEntry(key: ayuPrivacySettingsKey, { current in
++                    return PreferencesEntry(update(current?.get(AyuPrivacySettings.self) ?? .default))
++                })
++            }
++            |> ignoreValues
++        }
++
+         public func requestUpdatePeerIsBlocked(peerId: PeerId, isBlocked: Bool, sourceMessageId: MessageId? = nil) -> Signal<Void, NoError> {
+             return _internal_requestUpdatePeerIsBlocked(account: self.account, peerId: peerId, isBlocked: isBlocked, sourceMessageId: sourceMessageId)
+         }
+diff --git a/tools/ayu/tests/main.swift b/tools/ayu/tests/main.swift
+new file mode 100644
+--- /dev/null
++++ b/tools/ayu/tests/main.swift
+@@ -0,0 +1,23 @@
++import Foundation
++
++func check(_ value: @autoclosure () -> Bool, _ description: String) {
++    precondition(value(), description)
++}
++
++let empty = try JSONDecoder().decode(AyuPrivacySettings.self, from: Data("{}".utf8))
++check(empty == .default, "Missing preferences must preserve upstream behavior")
++let hidden = AyuPrivacySettings(hideOnline: true, hideTyping: true, keepChatsUnread: true)
++let encoded = try JSONEncoder().encode(hidden)
++let decoded = try JSONDecoder().decode(AyuPrivacySettings.self, from: encoded)
++check(decoded == hidden, "Preferences must survive a restart")
++let old = try JSONDecoder().decode(AyuPrivacySettings.self, from: Data("{\"hideOnline\":true}".utf8))
++check(old.hideOnline && !old.hideTyping && !old.keepChatsUnread, "New fields must have backward-compatible defaults")
++for requested in [false, true] {
++    check(AyuPrivacySettings.default.shouldSendOnlinePresence(requested) == requested, "Default presence must be unchanged")
++    check(!hidden.shouldSendOnlinePresence(requested), "Hidden presence must never advertise online")
++}
++check(!hidden.shouldSendActivity(isCancellation: false, isGroupCall: false), "Typing and recording must be suppressed")
++check(hidden.shouldSendActivity(isCancellation: true, isGroupCall: false), "Existing typing indicators must be cancellable")
++check(hidden.shouldSendActivity(isCancellation: false, isGroupCall: true), "Group calls must keep their speaking signaling")
++check(AyuPrivacySettings.default.shouldSendActivity(isCancellation: false, isGroupCall: false), "Default activity must be unchanged")
++print("Ayu privacy model tests passed")
