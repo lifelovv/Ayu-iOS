@@ -1,0 +1,332 @@
+diff --git a/submodules/SettingsUI/Sources/AyuMessageHistoryController.swift b/submodules/SettingsUI/Sources/AyuMessageHistoryController.swift
+new file mode 100644
+index 00000000..d313790a
+--- /dev/null
++++ b/submodules/SettingsUI/Sources/AyuMessageHistoryController.swift
+@@ -0,0 +1,54 @@
++import Foundation
++import Display
++import SwiftSignalKit
++import TelegramCore
++import TelegramPresentationData
++import ItemListUI
++import AccountContext
++
++private struct AyuHistoryEntry: ItemListNodeEntry {
++    let stableId: Int32
++    let text: String
++    var section: ItemListSectionId { return self.stableId }
++
++    static func < (lhs: AyuHistoryEntry, rhs: AyuHistoryEntry) -> Bool {
++        return lhs.stableId < rhs.stableId
++    }
++
++    func item(presentationData: ItemListPresentationData, arguments: Any) -> ListViewItem {
++        return ItemListTextItem(presentationData: presentationData, text: .plain(self.text), sectionId: self.section)
++    }
++}
++
++public func ayuMessageHistoryController(context: AccountContext) -> ViewController {
++    let actions = DisposableSet()
++    let formatter = DateFormatter()
++    formatter.dateStyle = .short
++    formatter.timeStyle = .short
++    let signal = combineLatest(context.sharedContext.presentationData, context.engine.privacy.ayuMessageHistory())
++    |> deliverOnMainQueue
++    |> map { presentationData, history -> (ItemListControllerState, (ItemListNodeState, Any)) in
++        var entries: [AyuHistoryEntry] = []
++        for (index, event) in history.entries.reversed().enumerated() {
++            let kind = event.kind == .edited ? "Изменено" : "Удалено"
++            let date = formatter.string(from: Date(timeIntervalSince1970: TimeInterval(event.timestamp)))
++            var text = "\(kind) · \(date)\nЧат: \(event.peerId) · Сообщение: \(event.messageId)\n\n\(event.text)"
++            if let updatedText = event.updatedText {
++                text += "\n\nПосле изменения:\n\(updatedText)"
++            }
++            entries.append(AyuHistoryEntry(stableId: Int32(index), text: text))
++        }
++        if entries.isEmpty {
++            entries.append(AyuHistoryEntry(stableId: 0, text: "Журнал пуст. Включите сохранение истории в настройках Ayu. Сообщения, которые клиент не получил, восстановить нельзя."))
++        }
++        let clearButton = ItemListNavigationButton(content: .text("Очистить"), style: .regular, enabled: !history.entries.isEmpty, action: {
++            actions.add(context.engine.privacy.clearAyuMessageHistory().start())
++        })
++        let state = ItemListControllerState(presentationData: ItemListPresentationData(presentationData), title: .text("История сообщений"), leftNavigationButton: nil, rightNavigationButton: clearButton, backNavigationButton: ItemListBackButton(title: presentationData.strings.Common_Back))
++        return (state, (ItemListNodeState(presentationData: ItemListPresentationData(presentationData), entries: entries, style: .blocks, animateChanges: false), ()))
++    }
++    |> afterDisposed {
++        actions.dispose()
++    }
++    return ItemListController(context: context, state: signal)
++}
+diff --git a/submodules/SettingsUI/Sources/AyuSettingsController.swift b/submodules/SettingsUI/Sources/AyuSettingsController.swift
+index 8896ea60..6a1d14ed 100644
+--- a/submodules/SettingsUI/Sources/AyuSettingsController.swift
++++ b/submodules/SettingsUI/Sources/AyuSettingsController.swift
+@@ -8,6 +8,7 @@ import AccountContext
+ 
+ private struct AyuSettingsArguments {
+     let update: (Int32, Bool) -> Void
++    let openHistory: () -> Void
+ }
+ 
+ private struct AyuSettingsEntry: ItemListNodeEntry {
+@@ -23,6 +24,9 @@ private struct AyuSettingsEntry: ItemListNodeEntry {
+ 
+     func item(presentationData: ItemListPresentationData, arguments: Any) -> ListViewItem {
+         let arguments = arguments as! AyuSettingsArguments
++        if self.stableId == 4 {
++            return ItemListDisclosureItem(presentationData: presentationData, systemStyle: .glass, title: self.title, label: "", labelStyle: .text, sectionId: self.section, style: .blocks, disclosureStyle: .arrow, action: arguments.openHistory)
++        }
+         if let value = self.value {
+             return ItemListSwitchItem(presentationData: presentationData, systemStyle: .glass, title: self.title, value: value, sectionId: self.section, style: .blocks, updated: { value in
+                 arguments.update(self.stableId, value)
+@@ -36,6 +40,7 @@ private struct AyuSettingsEntry: ItemListNodeEntry {
+ /// Local settings for the current account, available from Privacy and Security > Ayu.
+ public func ayuSettingsController(context: AccountContext) -> ViewController {
+     let actions = DisposableSet()
++    var openHistoryImpl: (() -> Void)?
+     let arguments = AyuSettingsArguments(update: { id, value in
+         actions.add(context.engine.privacy.updateAyuSettings { current in
+             var updated = current
+@@ -43,10 +48,13 @@ public func ayuSettingsController(context: AccountContext) -> ViewController {
+             case 0: updated.hideOnline = value
+             case 1: updated.hideTyping = value
+             case 2: updated.keepChatsUnread = value
++            case 3: updated.saveMessageHistory = value
+             default: break
+             }
+             return updated
+         }.start())
++    }, openHistory: {
++        openHistoryImpl?()
+     })
+     let signal = combineLatest(context.sharedContext.presentationData, context.engine.privacy.ayuSettings())
+     |> deliverOnMainQueue
+@@ -55,7 +63,9 @@ public func ayuSettingsController(context: AccountContext) -> ViewController {
+             AyuSettingsEntry(stableId: 0, title: "Не отправлять статус онлайн", value: settings.hideOnline),
+             AyuSettingsEntry(stableId: 1, title: "Скрывать набор текста и запись", value: settings.hideTyping),
+             AyuSettingsEntry(stableId: 2, title: "Не читать чаты автоматически", value: settings.keepChatsUnread),
+-            AyuSettingsEntry(stableId: 3, title: "Настройки действуют только для этого аккаунта. Ручное прочтение и просмотры историй пока не скрываются. Отправка сообщений и другие действия могут раскрыть активность.", value: nil)
++            AyuSettingsEntry(stableId: 3, title: "Сохранять историю сообщений", value: settings.saveMessageHistory),
++            AyuSettingsEntry(stableId: 4, title: "История правок и удалений", value: nil),
++            AyuSettingsEntry(stableId: 5, title: "Настройки действуют только для этого аккаунта. Ручное прочтение и просмотры историй пока не скрываются. История хранит последние 500 текстовых снимков, полученных после включения; без медиа и секретных чатов.", value: nil)
+         ]
+         let state = ItemListControllerState(presentationData: ItemListPresentationData(presentationData), title: .text("Ayu · Приватность"), leftNavigationButton: nil, rightNavigationButton: nil, backNavigationButton: ItemListBackButton(title: presentationData.strings.Common_Back))
+         return (state, (ItemListNodeState(presentationData: ItemListPresentationData(presentationData), entries: entries, style: .blocks, animateChanges: false), arguments))
+@@ -63,5 +73,9 @@ public func ayuSettingsController(context: AccountContext) -> ViewController {
+     |> afterDisposed {
+         actions.dispose()
+     }
+-    return ItemListController(context: context, state: signal)
++    let controller = ItemListController(context: context, state: signal)
++    openHistoryImpl = { [weak controller] in
++        (controller?.navigationController as? NavigationController)?.pushViewController(ayuMessageHistoryController(context: context), animated: true)
++    }
++    return controller
+ }
+diff --git a/submodules/TelegramCore/Sources/Settings/AyuMessageHistory.swift b/submodules/TelegramCore/Sources/Settings/AyuMessageHistory.swift
+new file mode 100644
+index 00000000..ee26063d
+--- /dev/null
++++ b/submodules/TelegramCore/Sources/Settings/AyuMessageHistory.swift
+@@ -0,0 +1,44 @@
++import Foundation
++
++public struct AyuMessageHistoryEntry: Codable, Equatable {
++    public enum Kind: String, Codable {
++        case edited
++        case deleted
++    }
++
++    public let peerId: Int64
++    public let messageId: Int32
++    public let kind: Kind
++    public let timestamp: Int64
++    public let text: String
++    public let updatedText: String?
++
++    public init(peerId: Int64, messageId: Int32, kind: Kind, timestamp: Int64, text: String, updatedText: String?) {
++        self.peerId = peerId
++        self.messageId = messageId
++        self.kind = kind
++        self.timestamp = timestamp
++        self.text = String(text.prefix(4096))
++        self.updatedText = updatedText.map { String($0.prefix(4096)) }
++    }
++}
++
++/// Text snapshots only. Stored inside the account's Postbox, never uploaded.
++public struct AyuMessageHistory: Codable, Equatable {
++    public private(set) var entries: [AyuMessageHistoryEntry] = []
++
++    public init() {
++    }
++
++    public mutating func append(_ entry: AyuMessageHistoryEntry) {
++        if let previous = self.entries.last, previous.peerId == entry.peerId,
++           previous.messageId == entry.messageId, previous.kind == entry.kind,
++           previous.text == entry.text, previous.updatedText == entry.updatedText {
++            return
++        }
++        self.entries.append(entry)
++        if self.entries.count > 500 {
++            self.entries.removeFirst(self.entries.count - 500)
++        }
++    }
++}
+diff --git a/submodules/TelegramCore/Sources/Settings/AyuMessageHistoryStorage.swift b/submodules/TelegramCore/Sources/Settings/AyuMessageHistoryStorage.swift
+new file mode 100644
+index 00000000..69ed7151
+--- /dev/null
++++ b/submodules/TelegramCore/Sources/Settings/AyuMessageHistoryStorage.swift
+@@ -0,0 +1,39 @@
++import Foundation
++import Postbox
++import SwiftSignalKit
++
++let ayuMessageHistoryKey: ValueBoxKey = {
++    let key = ValueBoxKey(length: 8)
++    key.setInt64(0, value: 0x4159554849535431)
++    return key
++}()
++
++func observeAyuMessageHistory(postbox: Postbox) -> Signal<AyuMessageHistory, NoError> {
++    return postbox.preferencesView(keys: [ayuMessageHistoryKey])
++    |> map { view in
++        return view.values[ayuMessageHistoryKey]?.get(AyuMessageHistory.self) ?? AyuMessageHistory()
++    }
++    |> distinctUntilChanged
++}
++
++func recordAyuMessageHistory(transaction: Transaction, ids: [MessageId], updatedText: String? = nil) {
++    guard fetchAyuPrivacySettings(transaction: transaction).saveMessageHistory else {
++        return
++    }
++    var history = transaction.getPreferencesEntry(key: ayuMessageHistoryKey)?.get(AyuMessageHistory.self) ?? AyuMessageHistory()
++    for id in ids {
++        guard id.namespace == Namespaces.Message.Cloud, id.peerId.namespace != Namespaces.Peer.SecretChat,
++              let message = transaction.getMessage(id), !message.text.isEmpty, !message.containsSecretMedia else {
++            continue
++        }
++        if let updatedText, updatedText == message.text {
++            continue
++        }
++        history.append(AyuMessageHistoryEntry(peerId: id.peerId.toInt64(), messageId: id.id,
++            kind: updatedText == nil ? .deleted : .edited, timestamp: Int64(Date().timeIntervalSince1970),
++            text: message.text, updatedText: updatedText))
++    }
++    transaction.updatePreferencesEntry(key: ayuMessageHistoryKey, { _ in
++        return PreferencesEntry(history)
++    })
++}
+diff --git a/submodules/TelegramCore/Sources/Settings/AyuPrivacySettings.swift b/submodules/TelegramCore/Sources/Settings/AyuPrivacySettings.swift
+index 2e9f5d5d..92666180 100644
+--- a/submodules/TelegramCore/Sources/Settings/AyuPrivacySettings.swift
++++ b/submodules/TelegramCore/Sources/Settings/AyuPrivacySettings.swift
+@@ -5,17 +5,19 @@ public struct AyuPrivacySettings: Codable, Equatable {
+     public var hideOnline: Bool
+     public var hideTyping: Bool
+     public var keepChatsUnread: Bool
++    public var saveMessageHistory: Bool
+ 
+     public static let `default` = AyuPrivacySettings()
+ 
+-    public init(hideOnline: Bool = false, hideTyping: Bool = false, keepChatsUnread: Bool = false) {
++    public init(hideOnline: Bool = false, hideTyping: Bool = false, keepChatsUnread: Bool = false, saveMessageHistory: Bool = false) {
+         self.hideOnline = hideOnline
+         self.hideTyping = hideTyping
+         self.keepChatsUnread = keepChatsUnread
++        self.saveMessageHistory = saveMessageHistory
+     }
+ 
+     private enum CodingKeys: String, CodingKey {
+-        case hideOnline, hideTyping, keepChatsUnread
++        case hideOnline, hideTyping, keepChatsUnread, saveMessageHistory
+     }
+ 
+     public init(from decoder: Decoder) throws {
+@@ -23,6 +25,7 @@ public struct AyuPrivacySettings: Codable, Equatable {
+         self.hideOnline = try container.decodeIfPresent(Bool.self, forKey: .hideOnline) ?? false
+         self.hideTyping = try container.decodeIfPresent(Bool.self, forKey: .hideTyping) ?? false
+         self.keepChatsUnread = try container.decodeIfPresent(Bool.self, forKey: .keepChatsUnread) ?? false
++        self.saveMessageHistory = try container.decodeIfPresent(Bool.self, forKey: .saveMessageHistory) ?? false
+     }
+ 
+     public func shouldSendOnlinePresence(_ requested: Bool) -> Bool {
+diff --git a/submodules/TelegramCore/Sources/State/AccountStateManagementUtils.swift b/submodules/TelegramCore/Sources/State/AccountStateManagementUtils.swift
+index 3d99e59d..8cbfe5a2 100644
+--- a/submodules/TelegramCore/Sources/State/AccountStateManagementUtils.swift
++++ b/submodules/TelegramCore/Sources/State/AccountStateManagementUtils.swift
+@@ -4622,6 +4622,7 @@ func replayFinalState(
+             case let .DeleteEphemeralMessages(peerId, ids):
+                 deleteEphemeralMessages(transaction: transaction, peerId: peerId, ids: ids)
+             case let .DeleteMessagesWithGlobalIds(ids):
++                recordAyuMessageHistory(transaction: transaction, ids: transaction.messageIdsForGlobalIds(ids))
+                 var resourceIds: [MediaResourceId] = []
+                 transaction.deleteMessagesWithGlobalIds(ids, forEachMedia: { media in
+                     addMessageMediaResourceIdsToRemove(media: media, resourceIds: &resourceIds)
+@@ -4631,6 +4632,7 @@ func replayFinalState(
+                 }
+                 deletedMessageIds.append(contentsOf: ids.map { .global($0) })
+             case let .DeleteMessages(ids):
++                recordAyuMessageHistory(transaction: transaction, ids: ids)
+                 _internal_deleteMessages(transaction: transaction, mediaBox: mediaBox, ids: ids, manualAddMessageThreadStatsDifference: { id, add, remove in
+                     addMessageThreadStatsDifference(threadKey: id, remove: remove, addedMessagePeer: nil, addedMessageId: nil, isOutgoing: false)
+                 })
+@@ -4668,6 +4670,7 @@ func replayFinalState(
+                     invalidateGroupStats.insert(Namespaces.PeerGroup.archive)
+                 }
+             case let .EditMessage(id, message):
++                recordAyuMessageHistory(transaction: transaction, ids: [id], updatedText: message.text)
+                 var generatedEvent: (reactionAuthor: Peer, reaction: MessageReaction.Reaction, message: Message, timestamp: Int32)?
+                 transaction.updateMessage(id, update: { previousMessage in
+                     let peers: [PeerId:Peer] = previousMessage.peers.reduce([:], { current, value in
+diff --git a/submodules/TelegramCore/Sources/TelegramEngine/Privacy/TelegramEnginePrivacy.swift b/submodules/TelegramCore/Sources/TelegramEngine/Privacy/TelegramEnginePrivacy.swift
+index 65f80cae..02669337 100644
+--- a/submodules/TelegramCore/Sources/TelegramEngine/Privacy/TelegramEnginePrivacy.swift
++++ b/submodules/TelegramCore/Sources/TelegramEngine/Privacy/TelegramEnginePrivacy.swift
+@@ -13,6 +13,19 @@ public extension TelegramEngine {
+             return observeAyuPrivacySettings(postbox: self.account.postbox)
+         }
+ 
++        public func ayuMessageHistory() -> Signal<AyuMessageHistory, NoError> {
++            return observeAyuMessageHistory(postbox: self.account.postbox)
++        }
++
++        public func clearAyuMessageHistory() -> Signal<Never, NoError> {
++            return self.account.postbox.transaction { transaction -> Void in
++                transaction.updatePreferencesEntry(key: ayuMessageHistoryKey, { _ in
++                    return PreferencesEntry(AyuMessageHistory())
++                })
++            }
++            |> ignoreValues
++        }
++
+         public func updateAyuSettings(_ update: @escaping (AyuPrivacySettings) -> AyuPrivacySettings) -> Signal<Never, NoError> {
+             return self.account.postbox.transaction { transaction -> Void in
+                 transaction.updatePreferencesEntry(key: ayuPrivacySettingsKey, { current in
+diff --git a/tools/ayu/tests/main.swift b/tools/ayu/tests/main.swift
+index 61696479..8b7fac96 100644
+--- a/tools/ayu/tests/main.swift
++++ b/tools/ayu/tests/main.swift
+@@ -21,3 +21,20 @@ check(hidden.shouldSendActivity(isCancellation: true, isGroupCall: false), "Exis
+ check(hidden.shouldSendActivity(isCancellation: false, isGroupCall: true), "Group calls must keep their speaking signaling")
+ check(AyuPrivacySettings.default.shouldSendActivity(isCancellation: false, isGroupCall: false), "Default activity must be unchanged")
+ print("Ayu privacy model tests passed")
++
++check(!old.saveMessageHistory, "Upgrading must not enable retention")
++var history = AyuMessageHistory()
++for id in 1 ... 501 {
++    history.append(AyuMessageHistoryEntry(peerId: 42, messageId: Int32(id), kind: .deleted, timestamp: 100,
++        text: "message \(id)", updatedText: nil))
++}
++check(history.entries.count == 500 && history.entries.first?.messageId == 2, "Retention must evict oldest snapshots")
++history.append(history.entries.last!)
++check(history.entries.count == 500 && history.entries.first?.messageId == 2, "Repeated delivery must not evict another snapshot")
++let historyData = try JSONEncoder().encode(history)
++let historyCopy = try JSONDecoder().decode(AyuMessageHistory.self, from: historyData)
++check(historyCopy == history, "History must survive a restart")
++let long = AyuMessageHistoryEntry(peerId: 42, messageId: 502, kind: .edited, timestamp: 101,
++    text: String(repeating: "🙂", count: 5000), updatedText: "new")
++check(long.text.count == 4096 && long.updatedText == "new", "Text bounds must preserve whole Unicode characters")
++print("Ayu message history model tests passed")
