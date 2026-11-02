@@ -40,6 +40,7 @@ workflows:
       - name: Build device IPA with test signature
         script: |
           set -euo pipefail
+          printf '%s\n' 'build --//Telegram:disableProvisioningProfiles' >> .bazelrc
           python3 -u build-system/Make/Make.py \
             --cacheDir="$HOME/ayu-bazel-cache" \
             build \
