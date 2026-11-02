@@ -12,12 +12,14 @@ workflows:
     scripts:
       - name: Check toolchain and generate private configuration
         script: python3 tools/ayu/ci.py configure
-      - name: Apply Ayu privacy features and run model tests
+      - name: Apply Ayu features and run privacy and history model tests
         script: |
           set -euo pipefail
           git apply --check ayu-privacy.patch
           git apply ayu-privacy.patch
-          swiftc -warnings-as-errors submodules/TelegramCore/Sources/Settings/AyuPrivacySettings.swift tools/ayu/tests/main.swift -o build-input/ayu/privacy-tests
+          git apply --check ayu-history.patch
+          git apply ayu-history.patch
+          swiftc -warnings-as-errors submodules/TelegramCore/Sources/Settings/AyuPrivacySettings.swift submodules/TelegramCore/Sources/Settings/AyuMessageHistory.swift tools/ayu/tests/main.swift -o build-input/ayu/privacy-tests
           build-input/ayu/privacy-tests
       - name: Install Metal compiler component
         script: |
@@ -69,12 +71,14 @@ workflows:
     scripts:
       - name: Check toolchain and generate private configuration
         script: python3 tools/ayu/ci.py configure
-      - name: Apply Ayu privacy features and run model tests
+      - name: Apply Ayu features and run privacy and history model tests
         script: |
           set -euo pipefail
           git apply --check ayu-privacy.patch
           git apply ayu-privacy.patch
-          swiftc -warnings-as-errors submodules/TelegramCore/Sources/Settings/AyuPrivacySettings.swift tools/ayu/tests/main.swift -o build-input/ayu/privacy-tests
+          git apply --check ayu-history.patch
+          git apply ayu-history.patch
+          swiftc -warnings-as-errors submodules/TelegramCore/Sources/Settings/AyuPrivacySettings.swift submodules/TelegramCore/Sources/Settings/AyuMessageHistory.swift tools/ayu/tests/main.swift -o build-input/ayu/privacy-tests
           build-input/ayu/privacy-tests
       - name: Install Metal compiler component
         script: |
@@ -93,6 +97,7 @@ workflows:
       - name: Build simulator app
         script: |
           set -euo pipefail
+          printf '%s\n' 'build --//Telegram:disableProvisioningProfiles' >> .bazelrc
           python3 -u build-system/Make/Make.py \
             --cacheDir="$HOME/ayu-bazel-cache" \
             build \
