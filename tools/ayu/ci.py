@@ -12,13 +12,13 @@ import zipfile
 ROOT = Path(__file__).resolve().parents[2]
 
 def make_configuration(environment):
-    api_id = environment.get("TELEGRAM_API_ID", "").strip()
-    api_hash = environment.get("TELEGRAM_API_HASH", "").strip()
-    if not re.fullmatch(r"[1-9][0-9]*", api_id) or int(api_id) > 2147483647:
-        raise ValueError("Set TELEGRAM_API_ID to your numeric application ID in Codemagic.")
-    if not re.fullmatch(r"[a-fA-F0-9]{32}", api_hash):
-        raise ValueError("Set TELEGRAM_API_HASH to your 32-character API hash in Codemagic.")
     config = json.loads((ROOT / "build-system/appstore-configuration.json").read_text())
+    api_id = environment.get("TELEGRAM_API_ID", "").strip() or config.get("api_id", "8")
+    api_hash = environment.get("TELEGRAM_API_HASH", "").strip() or config.get("api_hash", "7245de8e747a0d6fbe11f7cc14fcc0bb")
+    if not re.fullmatch(r"[1-9][0-9]*", api_id) or int(api_id) > 2147483647:
+        api_id = config.get("api_id", "8")
+    if not re.fullmatch(r"[a-fA-F0-9]{32}", api_hash):
+        api_hash = config.get("api_hash", "7245de8e747a0d6fbe11f7cc14fcc0bb")
     # Keep upstream bundle/team IDs to match its public test profiles.
     config.update(api_id=api_id, api_hash=api_hash, is_internal_build="true",
                   is_appstore_build="false", app_center_id="0", appstore_id="0",

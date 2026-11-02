@@ -5,10 +5,10 @@ workflows:
     max_build_duration: 120
     environment:
       xcode: "27.1"
-      groups:
-        - telegram_api
       vars:
         CM_RECURSIVE_SUBMODULE_INIT: "false"
+        TELEGRAM_API_ID: "8"
+        TELEGRAM_API_HASH: "7245de8e747a0d6fbe11f7cc14fcc0bb"
     scripts:
       - name: Check toolchain and generate private configuration
         script: python3 tools/ayu/ci.py configure
