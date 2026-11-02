@@ -12,6 +12,18 @@ workflows:
     scripts:
       - name: Check toolchain and generate private configuration
         script: python3 tools/ayu/ci.py configure
+      - name: Apply Ayu privacy features and run model tests
+        script: |
+          set -euo pipefail
+          git apply --check ayu-privacy.patch
+          git apply ayu-privacy.patch
+          swiftc -warnings-as-errors submodules/TelegramCore/Sources/Settings/AyuPrivacySettings.swift tools/ayu/tests/main.swift -o build-input/ayu/privacy-tests
+          build-input/ayu/privacy-tests
+      - name: Install Metal compiler component
+        script: |
+          set -euo pipefail
+          xcodebuild -downloadComponent MetalToolchain
+          xcrun metal --version
       - name: Download pinned submodules
         script: |
           set -euo pipefail
@@ -57,6 +69,18 @@ workflows:
     scripts:
       - name: Check toolchain and generate private configuration
         script: python3 tools/ayu/ci.py configure
+      - name: Apply Ayu privacy features and run model tests
+        script: |
+          set -euo pipefail
+          git apply --check ayu-privacy.patch
+          git apply ayu-privacy.patch
+          swiftc -warnings-as-errors submodules/TelegramCore/Sources/Settings/AyuPrivacySettings.swift tools/ayu/tests/main.swift -o build-input/ayu/privacy-tests
+          build-input/ayu/privacy-tests
+      - name: Install Metal compiler component
+        script: |
+          set -euo pipefail
+          xcodebuild -downloadComponent MetalToolchain
+          xcrun metal --version
       - name: Download pinned submodules
         script: |
           set -euo pipefail
