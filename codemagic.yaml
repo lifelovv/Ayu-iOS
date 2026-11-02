@@ -7,16 +7,20 @@ workflows:
       xcode: "27.1"
       groups:
         - telegram_api
+      vars:
+        CM_RECURSIVE_SUBMODULE_INIT: "false"
     scripts:
       - name: Check toolchain and generate private configuration
         script: python3 tools/ayu/ci.py configure
       - name: Download pinned submodules
         script: |
           set -euo pipefail
-          git config -f .gitmodules submodule.submodules/rlottie/rlottie.url https://github.com/TelegramMessenger/rlottie.git
-          git config -f .gitmodules submodule.submodules/TgVoipWebrtc/tgcalls.url https://github.com/TelegramMessenger/tgcalls.git
           git submodule sync --recursive
           git submodule update --init --recursive --jobs 8
+          git submodule status --recursive > build-input/ayu/submodules.txt
+          python3 -c 'from pathlib import Path; s=Path("build-input/ayu/submodules.txt").read_text().splitlines(); assert s and all(x.startswith(" ") for x in s), "Uninitialized or mismatched submodules"'
+          test -f submodules/tlottie/tlottie/src/lib.rs
+          test -d third-party/wallet-engine/wallet-engine/vendor/ton/resources
       - name: Import upstream test signing identity
         script: python3 build-system/Make/ImportCertificates.py --path build-system/fake-codesigning/certs
       - name: Build device IPA with test signature
@@ -46,6 +50,7 @@ workflows:
     environment:
       xcode: "27.1"
       vars:
+        CM_RECURSIVE_SUBMODULE_INIT: "false"
         # Compilation only: these values cannot authorize a Telegram account.
         TELEGRAM_API_ID: "1"
         TELEGRAM_API_HASH: "00000000000000000000000000000000"
@@ -55,10 +60,12 @@ workflows:
       - name: Download pinned submodules
         script: |
           set -euo pipefail
-          git config -f .gitmodules submodule.submodules/rlottie/rlottie.url https://github.com/TelegramMessenger/rlottie.git
-          git config -f .gitmodules submodule.submodules/TgVoipWebrtc/tgcalls.url https://github.com/TelegramMessenger/tgcalls.git
           git submodule sync --recursive
           git submodule update --init --recursive --jobs 8
+          git submodule status --recursive > build-input/ayu/submodules.txt
+          python3 -c 'from pathlib import Path; s=Path("build-input/ayu/submodules.txt").read_text().splitlines(); assert s and all(x.startswith(" ") for x in s), "Uninitialized or mismatched submodules"'
+          test -f submodules/tlottie/tlottie/src/lib.rs
+          test -d third-party/wallet-engine/wallet-engine/vendor/ton/resources
       - name: Build simulator app
         script: |
           set -euo pipefail
