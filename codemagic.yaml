@@ -45,8 +45,10 @@ workflows:
     max_build_duration: 120
     environment:
       xcode: "27.1"
-      groups:
-        - telegram_api
+      vars:
+        # Compilation only: these values cannot authorize a Telegram account.
+        TELEGRAM_API_ID: "1"
+        TELEGRAM_API_HASH: "00000000000000000000000000000000"
     scripts:
       - name: Check toolchain and generate private configuration
         script: python3 tools/ayu/ci.py configure
