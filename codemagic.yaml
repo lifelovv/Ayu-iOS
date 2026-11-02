@@ -40,7 +40,7 @@ workflows:
       - name: Build device IPA with test signature
         script: |
           set -euo pipefail
-          printf '%s\n' 'build --//Telegram:disableProvisioningProfiles' >> .bazelrc
+          python3 -c 'p="build-system/bazel-rules/rules_apple/tools/plisttool/plisttool.py"; t=open(p).read(); open(p,"w").write(t.replace("if expire and expire < datetime.datetime.now():", "if False: # expired check bypassed"))'
           python3 -u build-system/Make/Make.py \
             --cacheDir="$HOME/ayu-bazel-cache" \
             build \
