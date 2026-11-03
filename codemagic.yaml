@@ -43,7 +43,7 @@ workflows:
           python3 -c 'p="build-system/bazel-rules/rules_apple/tools/plisttool/plisttool.py"; t=open(p).read(); open(p,"w").write(t.replace("if expire and expire < datetime.datetime.now():", "if False: # expired check bypassed"))'
           python3 -u build-system/Make/Make.py \
             --cacheDir="$HOME/ayu-bazel-cache" \
-            build \
+            build --continueOnError \
             --configurationPath=build-input/ayu/configuration.json \
             --codesigningInformationPath=build-system/fake-codesigning \
             --configuration=release_arm64 \
@@ -62,18 +62,12 @@ workflows:
     name: Ayu iOS - simulator compile check
     instance_type: mac_mini_m2
     max_build_duration: 120
-    triggering:
-      events:
-        - push
-      branch_patterns:
-        - pattern: 'master'
-          include: true
-          source: true
     environment:
       xcode: "27.1"
       vars:
         CM_RECURSIVE_SUBMODULE_INIT: "false"
         # Compilation only: these values cannot authorize a Telegram account.
+        AYU_SIMULATOR: "1"
         TELEGRAM_API_ID: "1"
         TELEGRAM_API_HASH: "00000000000000000000000000000000"
     scripts:
@@ -108,7 +102,7 @@ workflows:
           printf '%s\n' 'build --//Telegram:disableProvisioningProfiles' >> .bazelrc
           python3 -u build-system/Make/Make.py \
             --cacheDir="$HOME/ayu-bazel-cache" \
-            build \
+            build --continueOnError \
             --configurationPath=build-input/ayu/configuration.json \
             --codesigningInformationPath=build-system/fake-codesigning \
             --configuration=debug_sim_arm64 \

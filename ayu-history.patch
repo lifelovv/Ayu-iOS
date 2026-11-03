@@ -3,7 +3,7 @@ new file mode 100644
 index 00000000..d313790a
 --- /dev/null
 +++ b/submodules/SettingsUI/Sources/AyuMessageHistoryController.swift
-@@ -0,0 +1,54 @@
+@@ -0,0 +1,66 @@
 +import Foundation
 +import Display
 +import SwiftSignalKit
@@ -11,6 +11,8 @@ index 00000000..d313790a
 +import TelegramPresentationData
 +import ItemListUI
 +import AccountContext
++import AlertUI
++import PresentationDataUtils
 +
 +private struct AyuHistoryEntry: ItemListNodeEntry {
 +    let stableId: Int32
@@ -28,6 +30,7 @@ index 00000000..d313790a
 +
 +public func ayuMessageHistoryController(context: AccountContext) -> ViewController {
 +    let actions = DisposableSet()
++    var presentConfirmation: ((ViewController) -> Void)?
 +    let formatter = DateFormatter()
 +    formatter.dateStyle = .short
 +    formatter.timeStyle = .short
@@ -48,7 +51,12 @@ index 00000000..d313790a
 +            entries.append(AyuHistoryEntry(stableId: 0, text: "Журнал пуст. Включите сохранение истории в настройках Ayu. Сообщения, которые клиент не получил, восстановить нельзя."))
 +        }
 +        let clearButton = ItemListNavigationButton(content: .text("Очистить"), style: .regular, enabled: !history.entries.isEmpty, action: {
-+            actions.add(context.engine.privacy.clearAyuMessageHistory().start())
++            presentConfirmation?(textAlertController(context: context, title: "Очистить журнал?", text: "Все сохранённые версии сообщений будут удалены с этого устройства.", actions: [
++                TextAlertAction(type: .genericAction, title: presentationData.strings.Common_Cancel, action: {}),
++                TextAlertAction(type: .destructiveAction, title: "Очистить", action: {
++                    actions.add(context.engine.privacy.clearAyuMessageHistory().start())
++                })
++            ]))
 +        })
 +        let state = ItemListControllerState(presentationData: ItemListPresentationData(presentationData), title: .text("История сообщений"), leftNavigationButton: nil, rightNavigationButton: clearButton, backNavigationButton: ItemListBackButton(title: presentationData.strings.Common_Back))
 +        return (state, (ItemListNodeState(presentationData: ItemListPresentationData(presentationData), entries: entries, style: .blocks, animateChanges: false), ()))
@@ -56,7 +64,11 @@ index 00000000..d313790a
 +    |> afterDisposed {
 +        actions.dispose()
 +    }
-+    return ItemListController(context: context, state: signal)
++    let controller = ItemListController(context: context, state: signal)
++    presentConfirmation = { [weak controller] alert in
++        controller?.present(alert, in: .window(.root))
++    }
++    return controller
 +}
 diff --git a/submodules/SettingsUI/Sources/AyuSettingsController.swift b/submodules/SettingsUI/Sources/AyuSettingsController.swift
 index 8896ea60..6a1d14ed 100644
@@ -129,7 +141,7 @@ new file mode 100644
 index 00000000..ee26063d
 --- /dev/null
 +++ b/submodules/TelegramCore/Sources/Settings/AyuMessageHistory.swift
-@@ -0,0 +1,44 @@
+@@ -0,0 +1,52 @@
 +import Foundation
 +
 +public struct AyuMessageHistoryEntry: Codable, Equatable {
@@ -150,8 +162,16 @@ index 00000000..ee26063d
 +        self.messageId = messageId
 +        self.kind = kind
 +        self.timestamp = timestamp
-+        self.text = String(text.prefix(4096))
-+        self.updatedText = updatedText.map { String($0.prefix(4096)) }
++        self.text = Self.boundedText(text)
++        self.updatedText = updatedText.map { Self.boundedText($0) }
++    }
++
++    private static func boundedText(_ text: String) -> String {
++        var bytesRemaining = 16_384
++        return String(text.prefix(4096).prefix { character in
++            bytesRemaining -= String(character).utf8.count
++            return bytesRemaining >= 0
++        })
 +    }
 +}
 +
@@ -179,7 +199,7 @@ new file mode 100644
 index 00000000..69ed7151
 --- /dev/null
 +++ b/submodules/TelegramCore/Sources/Settings/AyuMessageHistoryStorage.swift
-@@ -0,0 +1,39 @@
+@@ -0,0 +1,80 @@
 +import Foundation
 +import Postbox
 +import SwiftSignalKit
@@ -202,21 +222,62 @@ index 00000000..69ed7151
 +    guard fetchAyuPrivacySettings(transaction: transaction).saveMessageHistory else {
 +        return
 +    }
-+    var history = transaction.getPreferencesEntry(key: ayuMessageHistoryKey)?.get(AyuMessageHistory.self) ?? AyuMessageHistory()
++    let previous = transaction.getPreferencesEntry(key: ayuMessageHistoryKey)?.get(AyuMessageHistory.self) ?? AyuMessageHistory()
++    var history = previous
++    var addedIds = Set<MessageId>()
 +    for id in ids {
 +        guard id.namespace == Namespaces.Message.Cloud, id.peerId.namespace != Namespaces.Peer.SecretChat,
-+              let message = transaction.getMessage(id), !message.text.isEmpty, !message.containsSecretMedia else {
++              let message = transaction.getMessage(id), !message.text.isEmpty, !message.containsSecretMedia,
++              !message.attributes.contains(where: { $0 is AutoremoveTimeoutMessageAttribute }) else {
 +            continue
 +        }
 +        if let updatedText, updatedText == message.text {
 +            continue
 +        }
-+        history.append(AyuMessageHistoryEntry(peerId: id.peerId.toInt64(), messageId: id.id,
++        let entry = AyuMessageHistoryEntry(peerId: id.peerId.toInt64(), messageId: id.id,
 +            kind: updatedText == nil ? .deleted : .edited, timestamp: Int64(Date().timeIntervalSince1970),
-+            text: message.text, updatedText: updatedText))
++            text: message.text, updatedText: updatedText)
++        history.append(entry)
++        if entry.kind == .deleted, let copyId = entry.localCopyId, transaction.getMessage(copyId) == nil {
++            let copy = StoreMessage(
++                id: copyId, customStableId: nil, globallyUniqueId: nil, groupingKey: nil,
++                threadId: message.threadId, timestamp: message.timestamp, flags: [.Incoming],
++                tags: [], globalTags: [], localTags: [], forwardInfo: nil, authorId: message.author?.id,
++                text: "Удалено · локальная копия\n" + entry.text, attributes: [], media: []
++            )
++            let _ = transaction.addMessages([copy], location: .Random)
++            addedIds.insert(copyId)
++        }
++    }
++    let retainedIds = Set(history.entries.compactMap(\.localCopyId))
++    let evictedIds = Set(previous.entries.compactMap(\.localCopyId)).union(addedIds).subtracting(retainedIds)
++    if !evictedIds.isEmpty {
++        transaction.deleteMessages(Array(evictedIds), forEachMedia: nil)
++    }
++    guard history != previous else {
++        return
 +    }
 +    transaction.updatePreferencesEntry(key: ayuMessageHistoryKey, { _ in
 +        return PreferencesEntry(history)
++    })
++}
++
++private extension AyuMessageHistoryEntry {
++    var localCopyId: MessageId? {
++        guard self.kind == .deleted else { return nil }
++        return MessageId(peerId: PeerId(self.peerId), namespace: Namespaces.Message.AyuDeletedLocal, id: self.messageId)
++    }
++}
++
++func clearAyuMessageHistoryEntries(transaction: Transaction) {
++    if let history = transaction.getPreferencesEntry(key: ayuMessageHistoryKey)?.get(AyuMessageHistory.self) {
++        let ids = Set(history.entries.compactMap(\.localCopyId))
++        if !ids.isEmpty {
++            transaction.deleteMessages(Array(ids), forEachMedia: nil)
++        }
++    }
++    transaction.updatePreferencesEntry(key: ayuMessageHistoryKey, { _ in
++        return PreferencesEntry(AyuMessageHistory())
 +    })
 +}
 diff --git a/submodules/TelegramCore/Sources/Settings/AyuPrivacySettings.swift b/submodules/TelegramCore/Sources/Settings/AyuPrivacySettings.swift
@@ -285,7 +346,7 @@ diff --git a/submodules/TelegramCore/Sources/TelegramEngine/Privacy/TelegramEngi
 index 65f80cae..02669337 100644
 --- a/submodules/TelegramCore/Sources/TelegramEngine/Privacy/TelegramEnginePrivacy.swift
 +++ b/submodules/TelegramCore/Sources/TelegramEngine/Privacy/TelegramEnginePrivacy.swift
-@@ -13,6 +13,19 @@ public extension TelegramEngine {
+@@ -13,6 +13,17 @@ public extension TelegramEngine {
              return observeAyuPrivacySettings(postbox: self.account.postbox)
          }
  
@@ -295,9 +356,7 @@ index 65f80cae..02669337 100644
 +
 +        public func clearAyuMessageHistory() -> Signal<Never, NoError> {
 +            return self.account.postbox.transaction { transaction -> Void in
-+                transaction.updatePreferencesEntry(key: ayuMessageHistoryKey, { _ in
-+                    return PreferencesEntry(AyuMessageHistory())
-+                })
++                clearAyuMessageHistoryEntries(transaction: transaction)
 +            }
 +            |> ignoreValues
 +        }
@@ -330,3 +389,17 @@ index 61696479..8b7fac96 100644
 +    text: String(repeating: "🙂", count: 5000), updatedText: "new")
 +check(long.text.count == 4096 && long.updatedText == "new", "Text bounds must preserve whole Unicode characters")
 +print("Ayu message history model tests passed")
+diff --git a/submodules/TelegramCore/Sources/SyncCore/SyncCore_Namespaces.swift b/submodules/TelegramCore/Sources/SyncCore/SyncCore_Namespaces.swift
+index 50e467d6..53b7b3c2 100644
+--- a/submodules/TelegramCore/Sources/SyncCore/SyncCore_Namespaces.swift
++++ b/submodules/TelegramCore/Sources/SyncCore/SyncCore_Namespaces.swift
+@@ -15,2 +15,3 @@ public struct Namespaces {
+         public static let WelcomeMessageCloud: Int32 = 9
++        public static let AyuDeletedLocal: Int32 = 11
+         public static let WelcomeMessageLocal: Int32 = 10
+@@ -29,3 +30,4 @@ public struct Namespaces {
+             Namespaces.Message.WelcomeMessageLocal,
+-            Namespaces.Message.EphemeralAnchored
++            Namespaces.Message.EphemeralAnchored,
++            Namespaces.Message.AyuDeletedLocal
+         ]

@@ -10,6 +10,7 @@ import sys
 import zipfile
 
 ROOT = Path(__file__).resolve().parents[2]
+AYU_BUNDLE_ID = "com.lifelovv.ayu-ios"
 
 def make_configuration(environment):
     config = json.loads((ROOT / "build-system/appstore-configuration.json").read_text())
@@ -19,7 +20,9 @@ def make_configuration(environment):
         api_id = config.get("api_id", "8")
     if not re.fullmatch(r"[a-fA-F0-9]{32}", api_hash):
         api_hash = config.get("api_hash", "7245de8e747a0d6fbe11f7cc14fcc0bb")
-    # Keep upstream bundle/team IDs to match its public test profiles.
+    # The device test workflow uses upstream IDs to match its test profiles.
+    if environment.get("AYU_SIMULATOR") == "1":
+        config["bundle_id"] = AYU_BUNDLE_ID
     config.update(api_id=api_id, api_hash=api_hash, is_internal_build="true",
                   is_appstore_build="false", app_center_id="0", appstore_id="0",
                   app_specific_url_scheme="ayu", premium_iap_product_id="",
