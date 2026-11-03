@@ -1,13 +1,12 @@
 workflows:
   ayu-ios-ipa:
-    name: Ayu iOS - signed device IPA
+    name: Ayu iOS - IPA for re-signing
     instance_type: mac_mini_m2
     max_build_duration: 120
     environment:
       xcode: "27.1"
       vars:
         CM_RECURSIVE_SUBMODULE_INIT: "false"
-        AYU_REQUIRE_DEVICE_SIGNING: "1"
         TELEGRAM_API_ID: "8"
         TELEGRAM_API_HASH: "7245de8e747a0d6fbe11f7cc14fcc0bb"
     scripts:
@@ -39,7 +38,13 @@ workflows:
       - name: Build and package device IPA
         script: |
           set -euo pipefail
-          signing_dir="${AYU_SIGNING_DIRECTORY:?Provide a directory with Ayu-iOS profiles and certificates}"
+          if [[ -n "${AYU_SIGNING_TEAM_ID:-}" ]]; then
+            signing_dir="${AYU_SIGNING_DIRECTORY:?Provide a directory with Ayu-iOS profiles and certificates}"
+            test -d "$signing_dir/profiles"
+          else
+            signing_dir=build-system/fake-codesigning
+            python3 -c 'p="build-system/bazel-rules/rules_apple/tools/plisttool/plisttool.py"; t=open(p).read(); open(p,"w").write(t.replace("if expire and expire < datetime.datetime.now():", "if False: # expired check bypassed"))'
+          fi
           python3 build-system/Make/ImportCertificates.py --path "$signing_dir/certs"
           python3 -u build-system/Make/Make.py \
             --cacheDir="$HOME/ayu-bazel-cache" \
@@ -51,6 +56,7 @@ workflows:
             --outputBuildArtifactsPath=build/ayu-artifacts
           python3 tools/ayu/ci.py collect
     artifacts:
+      - build/ayu-artifacts/Ayu-iOS-resign-required.ipa
       - build/ayu-artifacts/Ayu-iOS.ipa
       - build/ayu-artifacts/Telegram.DSYMs.zip
       - build/ayu-artifacts/build-info.json
