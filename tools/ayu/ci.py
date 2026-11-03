@@ -37,6 +37,12 @@ def make_configuration(environment):
 
 def configure():
     config = make_configuration(os.environ)
+    if os.environ.get("AYU_REQUIRE_DEVICE_SIGNING") == "1":
+        if not os.environ.get("AYU_SIGNING_TEAM_ID", "").strip():
+            raise ValueError("Device IPA requires AYU_SIGNING_TEAM_ID and profiles for " + AYU_BUNDLE_ID)
+        signing_directory = os.environ.get("AYU_SIGNING_DIRECTORY", "").strip()
+        if not signing_directory or not all((Path(signing_directory) / name).is_dir() for name in ("profiles", "certs")):
+            raise ValueError("AYU_SIGNING_DIRECTORY must contain profiles and certs directories.")
     if platform.system() != "Darwin" or platform.machine() != "arm64":
         raise ValueError("Use an Apple silicon macOS worker.")
     expected = json.loads((ROOT / "versions.json").read_text())["xcode"]
