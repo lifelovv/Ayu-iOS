@@ -4,6 +4,7 @@ import json
 import os
 from pathlib import Path
 import platform
+import plistlib
 import re
 import subprocess
 import sys
@@ -21,7 +22,12 @@ def make_configuration(environment):
     if not re.fullmatch(r"[a-fA-F0-9]{32}", api_hash):
         api_hash = config.get("api_hash", "7245de8e747a0d6fbe11f7cc14fcc0bb")
     # The device test workflow uses upstream IDs to match its test profiles.
-    if environment.get("AYU_SIMULATOR") == "1":
+    team_id = environment.get("AYU_SIGNING_TEAM_ID", "").strip()
+    if team_id:
+        if not re.fullmatch(r"[A-Z0-9]{10}", team_id):
+            raise ValueError("AYU_SIGNING_TEAM_ID must be a 10-character Apple team ID.")
+        config.update(bundle_id=AYU_BUNDLE_ID, team_id=team_id)
+    elif environment.get("AYU_SIMULATOR") == "1":
         config["bundle_id"] = AYU_BUNDLE_ID
     config.update(api_id=api_id, api_hash=api_hash, is_internal_build="true",
                   is_appstore_build="false", app_center_id="0", appstore_id="0",
@@ -46,19 +52,24 @@ def configure():
 def collect():
     directory = ROOT / "build/ayu-artifacts"
     source = directory / "Telegram.ipa"
+    config = make_configuration(os.environ)
+    custom_signing = bool(os.environ.get("AYU_SIGNING_TEAM_ID", "").strip())
     with zipfile.ZipFile(source) as archive:
         if "Payload/Telegram.app/Telegram" not in archive.namelist():
             raise ValueError("IPA lacks the application executable.")
         if archive.testzip() is not None:
             raise ValueError("Corrupt IPA archive.")
-    destination = directory / "Ayu-iOS-resign-required.ipa"
+        plist = plistlib.loads(archive.read("Payload/Telegram.app/Info.plist"))
+        if plist.get("CFBundleIdentifier") != config["bundle_id"]:
+            raise ValueError("Packaged bundle ID differs from build configuration.")
+    destination = directory / ("Ayu-iOS.ipa" if custom_signing else "Ayu-iOS-resign-required.ipa")
     source.replace(destination)
     info = {"commit": subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=ROOT, text=True).strip(),
             "versions": json.loads((ROOT / "versions.json").read_text()),
-            "signing": "upstream public test identity; re-signing required",
-            "ayu_features_implemented": False}
+            "bundle_id": config["bundle_id"],
+            "signing": "custom Apple team" if custom_signing else "upstream public test identity; re-signing required"}
     (directory / "build-info.json").write_text(json.dumps(info, indent=2) + "\n")
-    print(f"Collected {destination.name}; re-sign before installation.")
+    print(f"Collected {destination.name} ({config['bundle_id']}).")
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)

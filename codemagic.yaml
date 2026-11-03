@@ -35,23 +35,29 @@ workflows:
           python3 -c 'from pathlib import Path; s=Path("build-input/ayu/submodules.txt").read_text().splitlines(); assert s and all(x.startswith(" ") for x in s), "Uninitialized or mismatched submodules"'
           test -f submodules/tlottie/tlottie/src/lib.rs
           test -d third-party/wallet-engine/wallet-engine/vendor/ton/resources
-      - name: Import upstream test signing identity
-        script: python3 build-system/Make/ImportCertificates.py --path build-system/fake-codesigning/certs
-      - name: Build device IPA with test signature
+      - name: Build and package device IPA
         script: |
           set -euo pipefail
-          python3 -c 'p="build-system/bazel-rules/rules_apple/tools/plisttool/plisttool.py"; t=open(p).read(); open(p,"w").write(t.replace("if expire and expire < datetime.datetime.now():", "if False: # expired check bypassed"))'
+          if [[ -n "${AYU_SIGNING_TEAM_ID:-}" ]]; then
+            signing_dir="${AYU_SIGNING_DIRECTORY:?Provide a directory with Ayu-iOS profiles and certificates}"
+            test -d "$signing_dir/profiles"
+          else
+            signing_dir=build-system/fake-codesigning
+            python3 -c 'p="build-system/bazel-rules/rules_apple/tools/plisttool/plisttool.py"; t=open(p).read(); open(p,"w").write(t.replace("if expire and expire < datetime.datetime.now():", "if False: # expired check bypassed"))'
+          fi
+          python3 build-system/Make/ImportCertificates.py --path "$signing_dir/certs"
           python3 -u build-system/Make/Make.py \
             --cacheDir="$HOME/ayu-bazel-cache" \
             build --continueOnError \
             --configurationPath=build-input/ayu/configuration.json \
-            --codesigningInformationPath=build-system/fake-codesigning \
+            --codesigningInformationPath="$signing_dir" \
             --configuration=release_arm64 \
             --buildNumber="${BUILD_NUMBER:-1}" \
             --outputBuildArtifactsPath=build/ayu-artifacts
           python3 tools/ayu/ci.py collect
     artifacts:
       - build/ayu-artifacts/Ayu-iOS-resign-required.ipa
+      - build/ayu-artifacts/Ayu-iOS.ipa
       - build/ayu-artifacts/Telegram.DSYMs.zip
       - build/ayu-artifacts/build-info.json
     cache:
